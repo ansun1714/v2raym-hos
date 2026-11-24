@@ -28,6 +28,7 @@ typedef int (*FnIsRunning)(void);
 typedef char *(*FnStats)(void);
 typedef char *(*FnProxyDelay)(char *name, char *url, int timeoutMs);
 typedef void (*FnProxyDelayAsync)(char *name, char *url, int timeoutMs, char *resPath, int seq);
+typedef char *(*FnProbeRealityAuto)(char *json, char *url, int timeoutMs);
 typedef char *(*FnVersion)(void);
 typedef void (*FnFree)(char *p);
 typedef void (*FnSetProtectCb)(int (*cb)(int));
@@ -39,6 +40,7 @@ static FnIsRunning g_isRunning = nullptr;
 static FnStats g_stats = nullptr;
 static FnProxyDelay g_proxyDelay = nullptr;
 static FnProxyDelayAsync g_proxyDelayAsync = nullptr;
+static FnProbeRealityAuto g_probeRealityAuto = nullptr;
 static FnVersion g_version = nullptr;
 static FnFree g_free = nullptr;
 static FnSetProtectCb g_setProtectCb = nullptr;
@@ -91,6 +93,7 @@ static bool LoadCore() {
     g_stats = (FnStats)dlsym(handle, "ncore_stats");
     g_proxyDelay = (FnProxyDelay)dlsym(handle, "ncore_proxydelay");
     g_proxyDelayAsync = (FnProxyDelayAsync)dlsym(handle, "ncore_proxydelay_async");
+    g_probeRealityAuto = (FnProbeRealityAuto)dlsym(handle, "ncore_probe_reality_auto");
     g_version = (FnVersion)dlsym(handle, "ncore_version");
     g_free = (FnFree)dlsym(handle, "ncore_free");
     g_setProtectCb = (FnSetProtectCb)dlsym(handle, "ncore_set_protect_cb");
@@ -358,6 +361,36 @@ static napi_value ProxyDelayAsync(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+// probeRealityAuto(nodeJson, url, timeoutMs)：用经典 X25519 与 X25519MLKEM768
+// 两种 REALITY 握手同时探测，返回 {"mode":0|1,"delay":n} 或 {"error":"..."}。
+static napi_value ProbeRealityAuto(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (!LoadCore() || g_probeRealityAuto == nullptr) {
+        return MakeString(env, "{\"error\":\"core not loaded\"}");
+    }
+    std::string node = GetString(env, argv[0]);
+    std::string url = argc > 1 ? GetString(env, argv[1]) : "";
+    int32_t timeout = 4000;
+    if (argc > 2) {
+        napi_get_value_int32(env, argv[2], &timeout);
+        if (timeout <= 0) {
+            timeout = 4000;
+        }
+    }
+    char *json = g_probeRealityAuto(const_cast<char *>(node.c_str()), const_cast<char *>(url.c_str()), timeout);
+    if (json == nullptr) {
+        return MakeString(env, "{\"error\":\"no result\"}");
+    }
+    std::string body(json);
+    if (g_free != nullptr) {
+        g_free(json);
+    }
+    OH_LOG_Print(LOG_APP, LOG_INFO, kDomain, kTag, "probeReality: %{public}s", body.c_str());
+    return MakeString(env, body);
+}
+
 static napi_value Version(napi_env env, napi_callback_info info) {
     if (!LoadCore()) {
         return MakeString(env, "unknown");
@@ -518,6 +551,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"stats", nullptr, Stats, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"proxyDelay", nullptr, ProxyDelay, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"proxyDelayAsync", nullptr, ProxyDelayAsync, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"probeRealityAuto", nullptr, ProbeRealityAuto, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"version", nullptr, Version, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setProtectHandler", nullptr, SetProtectHandler, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"protectDone", nullptr, ProtectDone, nullptr, nullptr, nullptr, napi_default, nullptr},

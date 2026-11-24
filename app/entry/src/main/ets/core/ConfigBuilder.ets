@@ -492,6 +492,12 @@ export class ConfigBuilder {
         if (profile.realitySid.length > 0) {
           lines.push('      short-id: ' + ConfigBuilder.quote(profile.realitySid));
         }
+        // 新版 Xray 的 REALITY 服务端只认 X25519MLKEM768。mihomo 默认把 MLKEM 密钥份额
+        // 从 ClientHello 里摘掉（兼容老服务端），遇到新服务端会握手失败并报
+        // "REALITY authentication failed"。探测确认过的节点在这里显式开启。
+        if (profile.realityMlkem === 1) {
+          lines.push('      support-x25519mlkem768: true');
+        }
       }
       if (profile.alpn.length > 0) {
         const alpnItems: string[] = profile.alpn.split(',').map((a: string) => a.trim())
@@ -635,5 +641,33 @@ export class ConfigBuilder {
 
   static injectFd(config: string, fd: number): string {
     return config.replace(TUN_FD_TOKEN, String(fd));
+  }
+
+  /**
+   * 在指定节点的 reality-opts 块里补一行 support-x25519mlkem768: true。
+   * 只用于「VPN 扩展进程探测确认该服务端要 MLKEM」这一种情况。配置由本类生成、
+   * 缩进固定（节点 2 空格 / 字段 4 空格 / reality 子项 6 空格），按行处理最稳。
+   */
+  static injectRealityMlkem(config: string, nodeName: string): string {
+    const target: string = '  - name: ' + ConfigBuilder.quote(nodeName);
+    const lines: string[] = config.split('\n');
+    const out: string[] = [];
+    let inTarget: boolean = false;
+    let inserted: boolean = false;
+    for (let i = 0; i < lines.length; i++) {
+      const line: string = lines[i];
+      if (line.startsWith('  - name: ')) {
+        inTarget = line === target;
+      }
+      if (inTarget && line.trim().startsWith('support-x25519mlkem768:')) {
+        inserted = true; // 已经带着这一行，不重复插
+      }
+      out.push(line);
+      if (inTarget && !inserted && line.trim().startsWith('reality-opts:')) {
+        out.push('      support-x25519mlkem768: true');
+        inserted = true;
+      }
+    }
+    return out.join('\n');
   }
 }

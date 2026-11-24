@@ -60,6 +60,7 @@ export class ProxyLink {
     p.fingerprint = spec.fingerprint;
     p.realityPbk = spec.realityPbk;
     p.realitySid = spec.realitySid;
+    p.realityMlkem = spec.realityMlkem;
     p.alpn = spec.alpn;
     p.allowInsecure = spec.allowInsecure;
     p.kcpSeed = spec.kcpSeed;
@@ -231,6 +232,12 @@ export class ProxyLink {
     const sid: string | undefined = parts.query.get('sid');
     if (sid !== undefined) {
       spec.realitySid = sid;
+    }
+    // 私有扩展：mlkem=1 表示这条 REALITY 节点要用 X25519MLKEM768 握手（新版 Xray 服务端）。
+    // 其他客户端不认这个参数会直接忽略，不影响分享。
+    const mlkem: string | undefined = parts.query.get('mlkem');
+    if (mlkem !== undefined) {
+      spec.realityMlkem = (mlkem === '1' || mlkem.toLowerCase() === 'true') ? 1 : 0;
     }
     const alpn: string | undefined = parts.query.get('alpn');
     if (alpn !== undefined) {
@@ -516,6 +523,10 @@ export class ProxyLink {
       add('fp', p.fingerprint);
       add('pbk', p.realityPbk);
       add('sid', p.realitySid);
+      // 自己导出的链接带上 MLKEM 标记，重新导入时不用再探测；别的客户端会忽略。
+      if (p.realityMlkem === 1) {
+        q.push('mlkem=1');
+      }
       add('alpn', p.alpn);
       if (p.allowInsecure) {
         q.push('allowInsecure=1');

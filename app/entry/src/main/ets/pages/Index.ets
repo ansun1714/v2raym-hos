@@ -6,7 +6,7 @@ import { vpnExtension, http, connection } from '@kit.NetworkKit';
 import { PromptAction } from '@kit.ArkUI';
 import { util } from '@kit.ArkTS';
 import { ProxyLink } from '../core/ProxyLink';
-import { Profile, CoreState, DelayBody, DelayReq, DelayRes, RuleItem, AppScope, AppSettings, SubQuota, FetchResult, BackupPayload } from '../core/Model';
+import { Profile, CoreState, DelayBody, DelayReq, DelayRes, RuleItem, AppScope, AppSettings, SubQuota, FetchResult, BackupPayload, RealityProbeReq } from '../core/Model';
 import { ConfigBuilder } from '../core/ConfigBuilder';
 import { FileStore } from '../core/FileStore';
 import { KeepAliveManager } from '../core/KeepAliveManager';
@@ -4050,6 +4050,60 @@ struct Index {
   // ---------- 连接 ----------
 
   /**
+   * 把 REALITY 探测结果缓存刷进内存里的节点：同一节点只探测一次，
+   * 后续连接直接复用结论（缓存由 VPN 扩展进程在建 TUN 之前写）。
+   */
+  private applyRealityModeCache(): void {
+    const modes: Map<string, number> = FileStore.loadRealityModes(this.filesDir);
+    if (modes.size === 0) {
+      return;
+    }
+    this.profiles.forEach((p: Profile) => {
+      if (p.type === 'vless' && p.tls && p.realityPbk.length > 0) {
+        const hit: number | undefined = modes.get(FileStore.realityKey(p.server, p.port, p.uuid));
+        if (hit === 0 || hit === 1) {
+          p.realityMlkem = hit;
+        }
+      }
+    });
+  }
+
+  /**
+   * 给选中节点准备 REALITY 探测请求：只有 vless + REALITY 且模式未知时才写。
+   * 真正的探测在 VPN 扩展进程里、建 TUN 之前做（那时没有 TUN 也没有 protect，
+   * 出站是直连），结果由扩展写 reality-mode.json，界面下次连接直接复用。
+   */
+  private prepareRealityProbe(): void {
+    const path: string = FileStore.probeReqPath(this.filesDir);
+    FileStore.removeFile(path);
+    if (this.selected < 0 || this.selected >= this.profiles.length) {
+      return;
+    }
+    const p: Profile = this.profiles[this.selected];
+    if (p.type !== 'vless' || !p.tls || p.realityPbk.length === 0) {
+      return;
+    }
+    const mode: number = (p.realityMlkem === undefined || p.realityMlkem === null) ? -1 : p.realityMlkem;
+    p.realityMlkem = mode;
+    if (mode >= 0) {
+      return;
+    }
+    const req: RealityProbeReq = {
+      name: p.name,
+      server: p.server,
+      port: p.port,
+      uuid: p.uuid,
+      flow: p.flow,
+      sni: p.sni,
+      fingerprint: p.fingerprint,
+      pbk: p.realityPbk,
+      sid: p.realitySid
+    };
+    FileStore.writeText(path, JSON.stringify(req));
+    FileStore.appendLog(this.filesDir, 'reality probe queued: ' + p.name);
+  }
+
+  /**
    * 连接入口互斥：自动恢复定时器、用户点击、节点切换重连可能同一秒并发，
    * 旧实现无互斥，出现同秒两次 startVpnExtensionAbility（22:40:22/25、
    * 06:47:01/02）并伴随 onCreate→onDestroy→onCreate。这里串行化所有入口，
@@ -4120,6 +4174,8 @@ struct Index {
           return;
         }
       }
+      this.applyRealityModeCache();
+      this.prepareRealityProbe();
       const config: string = ConfigBuilder.build(this.profiles, this.selected, this.rules);
       FileStore.writeText(FileStore.configPath(this.filesDir), config);
       const want: Want = {

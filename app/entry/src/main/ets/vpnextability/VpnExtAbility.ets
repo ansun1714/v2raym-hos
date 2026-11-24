@@ -4,7 +4,8 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { vpnExtension, VpnExtensionAbility, connection } from '@kit.NetworkKit';
 import { NgCore } from '../core/NgCore';
 import { FileStore } from '../core/FileStore';
-import { DelayReq, DelayRes, DelayBody, AppScope } from '../core/Model';
+import { ConfigBuilder } from '../core/ConfigBuilder';
+import { DelayReq, DelayRes, DelayBody, AppScope, RealityProbeReq, RealityProbeResult } from '../core/Model';
 
 const DOMAIN: number = 0x0001;
 const TAG: string = 'V2rayM-VpnExt';
@@ -125,6 +126,43 @@ export default class VpnExtAbility extends VpnExtensionAbility {
     if (rawConfig.length === 0) {
       this.writeState(false, '内核配置为空，请先在界面选择节点');
       return;
+    }
+    let config: string = rawConfig;
+
+    // REALITY 兼容性探测：必须在建 TUN 之前做——此刻进程里还没有 TUN、也没有
+    // protect 回调，出站是真直连；建完 TUN 之后再拨会回环进隧道。
+    // 新版 Xray 的 REALITY 服务端只认 X25519MLKEM768，而 mihomo 默认按经典 X25519
+    // 握手会被判非法（报 REALITY authentication failed，v2rayNG 却能连）。
+    // 界面进程把待探测节点写进 reality-probe.json，这里两种模式各试一次，
+    // 确认要 MLKEM 就把 support-x25519mlkem768 注入本节点配置，并缓存结果。
+    const probeText: string = FileStore.readText(FileStore.probeReqPath(filesDir));
+    if (probeText.length > 0) {
+      try {
+        const req: RealityProbeReq = JSON.parse(probeText) as RealityProbeReq;
+        if (req.server.length > 0 && req.pbk.length > 0) {
+          const resText: string = NgCore.probeRealityAuto(JSON.stringify(req),
+            'http://www.gstatic.com/generate_204', 3000);
+          const res: RealityProbeResult = JSON.parse(resText) as RealityProbeResult;
+          if (res.mode === 0 || res.mode === 1) {
+            FileStore.saveRealityMode(filesDir,
+              FileStore.realityKey(req.server, req.port, req.uuid), res.mode);
+            if (res.mode === 1) {
+              config = ConfigBuilder.injectRealityMlkem(config, req.name);
+            }
+            hilog.info(DOMAIN, TAG, 'reality probe %{public}s => mode %{public}d', req.name, res.mode);
+            FileStore.appendLog(filesDir,
+              'reality probe ok: ' + req.name + ' mode=' + String(res.mode));
+          } else {
+            const why: string = (res.error === undefined || res.error === null) ? resText : res.error;
+            FileStore.appendLog(filesDir, 'reality probe failed: ' + why);
+          }
+        }
+      } catch (err) {
+        hilog.error(DOMAIN, TAG, 'reality probe threw: %{public}s', String(err));
+        FileStore.appendLog(filesDir, 'reality probe threw: ' + String(err));
+      } finally {
+        FileStore.removeFile(FileStore.probeReqPath(filesDir));
+      }
     }
 
     const tunAddr: connection.NetAddress = { address: TUN_IP, family: 1, port: 0 };
@@ -269,7 +307,7 @@ export default class VpnExtAbility extends VpnExtensionAbility {
         }
       });
 
-      const config: string = rawConfig.replace('__TUN_FD__', String(fd));
+      config = config.replace('__TUN_FD__', String(fd));
       // 分流用的 geo 数据：从 rawfile 落到内核 home 目录（缺文件内核会尝试联网下载）
       const hasGeoIp: boolean = FileStore.ensureRawAsset(this.context.resourceManager,
         'geoip.dat', 'geoip.dat', filesDir);

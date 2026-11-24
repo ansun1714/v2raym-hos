@@ -35,6 +35,16 @@ export class NgCore {
   }
 
   /**
+   * REALITY 兼容性探测：同一节点分别用经典 X25519 与 X25519MLKEM768 握手各拨一次，
+   * 返回 {"mode":0|1,"delay":N}（成功）或 {"error":"..."}。
+   * 新版 Xray 服务端只认 MLKEM，mihomo 默认模式会被判非法（v2rayNG 却能连），
+   * 连接前跑一次即可自动选对模式。该调用只建出站连接，不依赖 TUN，可在界面进程用。
+   */
+  static probeRealityAuto(nodeJson: string, url: string, timeoutMs: number): string {
+    return ngnapi.probeRealityAuto(nodeJson, url, timeoutMs);
+  }
+
+  /**
    * 注册出站 socket 保护回调。鸿蒙上 VPN 进程自己发出的连接也会被 TUN 拦截，
    * 必须对每个 fd 调 VpnConnection.protect，否则流量回环、代理不可用。
    */

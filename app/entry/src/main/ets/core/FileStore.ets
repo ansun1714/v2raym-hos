@@ -209,6 +209,53 @@ export class FileStore {
     return FileStore.ensureDir(filesDir) + '/delay_res.json';
   }
 
+  /** REALITY 探测请求：界面进程写，VPN 扩展进程在建 TUN 之前读并删掉。 */
+  static probeReqPath(filesDir: string): string {
+    return FileStore.ensureDir(filesDir) + '/reality-probe.json';
+  }
+
+  /**
+   * REALITY 密钥交换模式的探测结果缓存：key = server|port|uuid，value = 0|1。
+   * 放在独立小文件里而不是写回 profiles.json：两个进程共享 profiles.json 会互相覆盖，
+   * 这里只有扩展进程写、界面进程读，天然无冲突。
+   */
+  static realityModePath(filesDir: string): string {
+    return FileStore.ensureDir(filesDir) + '/reality-mode.json';
+  }
+
+  static realityKey(server: string, port: number, uuid: string): string {
+    return server + '|' + String(port) + '|' + uuid;
+  }
+
+  static loadRealityModes(filesDir: string): Map<string, number> {
+    const map: Map<string, number> = new Map<string, number>();
+    const text: string = FileStore.readText(FileStore.realityModePath(filesDir));
+    if (text.length === 0) {
+      return map;
+    }
+    try {
+      const obj: Record<string, number> = JSON.parse(text) as Record<string, number>;
+      Object.keys(obj).forEach((key: string) => {
+        const mode: number = obj[key];
+        if (mode === 0 || mode === 1) {
+          map.set(key, mode);
+        }
+      });
+    } catch (err) {
+    }
+    return map;
+  }
+
+  static saveRealityMode(filesDir: string, key: string, mode: number): void {
+    const map: Map<string, number> = FileStore.loadRealityModes(filesDir);
+    map.set(key, mode);
+    const obj: Record<string, number> = {};
+    map.forEach((value: number, name: string) => {
+      obj[name] = value;
+    });
+    FileStore.writeText(FileStore.realityModePath(filesDir), JSON.stringify(obj));
+  }
+
   /**
    * 并发测速用的请求/结果文件：每个 seq 一对（req_<seq>.json / res_<seq>.json），
    * 放在 delay/ 子目录，避免并发时互相覆盖。

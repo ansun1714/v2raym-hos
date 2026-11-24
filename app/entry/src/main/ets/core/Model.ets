@@ -21,6 +21,11 @@ export class ProxySpec {
   fingerprint: string = '';
   realityPbk: string = '';
   realitySid: string = '';
+  /**
+   * REALITY 的密钥交换模式：-1 未知（连接前自动探测）/ 0 经典 X25519 / 1 X25519MLKEM768。
+   * 新版 Xray 服务端只认 MLKEM，此时经典模式会报 REALITY authentication failed。
+   */
+  realityMlkem: number = -1;
   alpn: string = '';       // TLS ALPN，逗号分隔，如 h2,http/1.1
   allowInsecure: boolean = false;
   kcpSeed: string = '';    // mkcp/kcp 传输的 seed
@@ -65,6 +70,8 @@ export class Profile {
   fingerprint: string = '';
   realityPbk: string = '';
   realitySid: string = '';
+  /** REALITY 密钥交换模式：-1 未知 / 0 经典 X25519 / 1 X25519MLKEM768（见 ProxySpec 注释） */
+  realityMlkem: number = -1;
   alpn: string = '';
   allowInsecure: boolean = false;
   kcpSeed: string = '';
@@ -170,6 +177,26 @@ export interface DelayRes {
   seq: number;
   delay: number;
   error: string;
+}
+
+/** REALITY 兼容性探测请求：界面进程写文件，VPN 扩展进程在建 TUN 之前读。 */
+export interface RealityProbeReq {
+  name: string;
+  server: string;
+  port: number;
+  uuid: string;
+  flow: string;
+  sni: string;
+  fingerprint: string;
+  pbk: string;
+  sid: string;
+}
+
+/** 探测结果：mode 0 = 经典 X25519，1 = X25519MLKEM768。 */
+export interface RealityProbeResult {
+  mode?: number;
+  delay?: number;
+  error?: string;
 }
 
 /**

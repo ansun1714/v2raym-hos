@@ -22,6 +22,8 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/metacubex/mihomo/adapter"
+	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/config"
@@ -222,6 +224,114 @@ func ncore_proxydelay_async(name *C.char, url *C.char, timeoutMs C.int, resPath 
 		out := `{"seq":` + strconv.FormatInt(seqNum, 10) + `,` + strings.TrimPrefix(body, "{")
 		_ = os.WriteFile(path, []byte(out), 0600)
 	}()
+}
+
+// ncore_probe_reality_auto 用两种 REALITY 握手方式同时探测同一个 vless+REALITY 出站：
+// 经典 X25519（mihomo 默认）与 X25519MLKEM768（新版 Xray 服务端）。
+//
+// 为什么需要：新版 Xray 的 REALITY 服务端只认 MLKEM 密钥份额，而 mihomo 默认会把
+// MLKEM 从 ClientHello 里摘掉（为了兼容老服务端）。服务端判非法后会 fallback 到
+// 真实站点的证书，客户端侧表现为 "REALITY authentication failed"——同一节点换
+// Xray 内核（v2rayNG）却是通的。两种模式各试一次即可自动分辨，不必让用户手改。
+//
+// 返回 {"mode":0|1,"delay":毫秒}，两种都不通时返回 {"error":"原因"}。
+//
+//export ncore_probe_reality_auto
+func ncore_probe_reality_auto(nodeJSON *C.char, url *C.char, timeoutMs C.int) *C.char {
+	return C.CString(probeRealityAutoJSON(C.GoString(nodeJSON), C.GoString(url), int(timeoutMs)))
+}
+
+type realityProbeReq struct {
+	Server      string `json:"server"`
+	Port        int    `json:"port"`
+	UUID        string `json:"uuid"`
+	Flow        string `json:"flow"`
+	SNI         string `json:"sni"`
+	Fingerprint string `json:"fingerprint"`
+	PublicKey   string `json:"pbk"`
+	ShortID     string `json:"sid"`
+}
+
+type realityProbeResult struct {
+	mode  int
+	delay uint16
+	err   error
+}
+
+func probeRealityAutoJSON(reqJSON, urlStr string, timeout int) string {
+	var req realityProbeReq
+	if err := json.Unmarshal([]byte(reqJSON), &req); err != nil {
+		return jsonError("bad request: " + err.Error())
+	}
+	if req.Server == "" || req.Port <= 0 || req.UUID == "" || req.PublicKey == "" {
+		return jsonError("node fields incomplete")
+	}
+	if urlStr == "" {
+		urlStr = "http://www.gstatic.com/generate_204"
+	}
+	if timeout <= 0 {
+		timeout = 4000
+	}
+	ch := make(chan realityProbeResult, 2)
+	for _, m := range []int{0, 1} {
+		mode := m
+		go func() {
+			delay, err := probeRealityOnce(req, mode, urlStr, timeout)
+			ch <- realityProbeResult{mode: mode, delay: delay, err: err}
+		}()
+	}
+	var lastErr error
+	for i := 0; i < 2; i++ {
+		r := <-ch
+		if r.err == nil {
+			data, _ := json.Marshal(map[string]int{"mode": r.mode, "delay": int(r.delay)})
+			return string(data)
+		}
+		lastErr = r.err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("probe failed")
+	}
+	return jsonError(lastErr.Error())
+}
+
+func probeRealityOnce(req realityProbeReq, mode int, urlStr string, timeout int) (uint16, error) {
+	option := outbound.VlessOption{
+		Name:              "reality-probe",
+		Server:            req.Server,
+		Port:              req.Port,
+		UUID:              req.UUID,
+		Flow:              req.Flow,
+		TLS:               true,
+		Network:           "tcp",
+		ServerName:        req.SNI,
+		ClientFingerprint: req.Fingerprint,
+		RealityOpts: outbound.RealityOptions{
+			PublicKey:             req.PublicKey,
+			ShortID:               req.ShortID,
+			SupportX25519MLKEM768: mode == 1,
+		},
+	}
+	proxy, err := outbound.NewVless(option)
+	if err != nil {
+		return 0, err
+	}
+	expected, _ := utils.NewUnsignedRanges[uint16]("")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Millisecond)
+	defer cancel()
+	delay, err := adapter.NewProxy(proxy).URLTest(ctx, urlStr, expected)
+	if err != nil {
+		return 0, err
+	}
+	if delay == 0 {
+		return 0, fmt.Errorf("delay test returned 0")
+	}
+	return delay, nil
+}
+
+func jsonError(message string) string {
+	data, _ := json.Marshal(map[string]string{"error": message})
+	return string(data)
 }
 
 // ncore_free 释放本库返回的 C 字符串。
